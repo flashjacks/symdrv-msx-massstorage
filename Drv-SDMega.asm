@@ -478,7 +478,7 @@ drvwrt  push hl
         pop hl
         or a
         jr nz,drvwrt
-drvwrt1 ld a,0          ;show destination/source memory at #8000
+drvwrt1 ld a,0          ;show destination/source memory at #0000
         out (#fc),a
         push de
         push bc

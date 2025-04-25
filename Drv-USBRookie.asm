@@ -118,7 +118,8 @@ drvinp1 call drvsta                 ;main loop
         out (prt_cmd),a
         in a,(prt_data)
         cp 64
-        ld a,stoerrsec+1
+        ld a,stoerrsec
+        scf
         ret nz
         call drvshw
         ld c,prt_data
@@ -338,7 +339,7 @@ if 0
         out (prt_cmd),a
         ld a,#55
         out (prt_data),a
-        ld a,(prt_data)
+        in a,(prt_data)         ;WAS -> LD A,... probably the reason why out-commented
 ld a,#d4
 ld c,a
 rrca:rrca:rrca:rrca

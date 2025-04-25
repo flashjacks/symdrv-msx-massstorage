@@ -308,7 +308,7 @@ drvbnk  push de
         ei
         ret
         
-;### DRVSHW -> maps application memory at #8000-#bfff
+;### DRVSHW -> maps application memory at #0000-#3fff
 ;### Destroyed  A
 drvshw  di
 drvshw1 ld a,0          ;show application ram
