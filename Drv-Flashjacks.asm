@@ -236,6 +236,7 @@ ideact_wait:
         jr nz,ideact_wait
         dec h
         jr nz,ideact_wait
+        call bnkdofx           ;Release the ideshw mapping before bailing out
         ld a,stoerrabo
         scf
         ret
@@ -329,9 +330,19 @@ idecop1 ldi:ldi:ldi:ldi:ldi:ldi:ldi:ldi:ldi:ldi:ldi:ldi:ldi:ldi:ldi:ldi
         dec a
         jp nz,idecop1
 idecop_wait:
+        ld hl,256*30            ;Bounded wait, same limit as IDEACT/IDERDY
+idecop_wait1:
         ld a,(ideprtsta)
         bit 7,a
-        jr nz,idecop_wait
+        jr z,idecop_wait_end
+        dec l
+        jr nz,idecop_wait1
+        dec h
+        jr nz,idecop_wait1
+        ld a,stoerrabo           ;Timeout report as an error
+        scf
+        ret
+idecop_wait_end:
         ret
 
 ;### IDEERR -> check error state
@@ -451,7 +462,9 @@ ideshw1 ld a,(ideslt+1)
 ;### Output     CF=0 -> ok, CF=1 -> error (A=error code)
 ;### Destroyed  AF
 iderdy  push hl
-        ld hl,256*30
+        push bc
+        ld b,3                 ;Limit to a bounded number of reset retries
+iderdy0 ld hl,256*30
 iderdy1 ld a,(ideprtsta)
         and #c0
         cp #40
@@ -460,30 +473,45 @@ iderdy1 ld a,(ideprtsta)
         jr nz,iderdy1
         dec h
         jr nz,iderdy1
+        dec b
+        jr z,iderdy3           ;Retries exhausted give up with an error
+        push bc                ;Preserve retry counter across the external calls
         call bnkmofx
         call bnkdofx
         rst #30
         call ideshw
 iderdy4 ld a,0
         out (#fc),a
-        ld hl,256*30
-        jr iderdy1
+        pop bc
+        jr iderdy0
 iderdy3 ld a,stoerrabo
         scf
-iderdy2 pop hl
+iderdy2 pop bc
+        pop hl
         ret
 
 ;### IDEDRQ -> wait for data request
 ;### Output     CF=0 -> ok, CF=1 -> error (A=error code)
 ;### Destroyed  AF
-idedrq  nop
+idedrq  push hl
+        ld hl,256*30            ;Bounded wait, same limit as IDEACT/IDERDY
+        nop
         nop
 idedrq1 ld a,(ideprtsta)
         bit 3,a
         jr nz,idedrq_end
         bit 7,a
+        jr z,idedrq_end
+        dec l
         jr nz,idedrq1
+        dec h
+        jr nz,idedrq1
+        pop hl
+        ld a,stoerrabo           ;Timeout report as an error
+        scf
+        ret
 idedrq_end:
+        pop hl
         call ideerr
         ret
 
