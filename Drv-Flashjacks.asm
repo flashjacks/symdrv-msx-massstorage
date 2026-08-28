@@ -37,14 +37,16 @@ db "SMD3"               ;ID
 dw ideend-idejmp        ;code length
 dw relocate_count       ;number of relocate table entries
 ds 8                    ;*reserved*
-db 2,1,1                ;Version Minor, Version Major, Type (-1=NUL, 0=FDC, 1=IDE, 2=SD, 3=SCSI)
+db 0,3,1                ;Version Minor, Version Major, Type (-1=NUL, 0=FDC, 1=IDE, 2=SD, 3=SCSI)
 db "FlashJacks   "      ;comment
 
 idejmp  dw ideinp,ideout,ideact,idemof
 idemof  ret:dw 0
-        db 32*1+6       ;bit[0-4]=driver ID (6=sunrise), bit[5-7]=storage type (1=IDE)
+        db 32*1+12      ;bit[0-4]=driver ID (12=flashjacks), bit[5-7]=storage type (1=IDE)
         ds 4
 ideslt  ds 3
+ideactdev ds 1
+idefc	db 0
 
 stobnkx equ #815A       ;memory mapping, when low level routines read/write sector data
 bnkmonx equ #8112       ;set special memory mapping during mass storage access
@@ -125,7 +127,7 @@ ideinp0 push de
         pop hl                  ;HL=destination address
         ld a,(stobnkx)
         call bnkmonx
-        ld (iderdy4+1),a
+        ld (idefc),a
         ld c,a
 ideinp1 push bc
         ex de,hl
@@ -136,6 +138,7 @@ ideinp1 push bc
         jr c,ideinp2
         call ideerr
         jr c,ideinp2
+	call idehde
         call bnkmofx
         call bnkdofx            ;allow irqs between sectors
         call ideshw
@@ -143,11 +146,13 @@ ideinp1 push bc
         out (#fc),a
         djnz ideinp1
 ideinp2 push af
-        call bnkmofx
+        call idehde
+	call bnkmofx
         call bnkdofx
         pop af
         ret
 ideinp3 push af
+	call idehde
         call bnkdofx
         pop af
         pop hl
@@ -171,17 +176,17 @@ ideout0 push de
         pop hl                  ;HL=source address
         ld a,(stobnkx)
         call bnkmonx
-        ld (iderdy4+1),a
+        ld (idefc),a
         ld c,a
 ideout1 push bc
         ld de,ideprtdat
         call idecop
-        call nc,iderdy
         pop bc
         jr c,ideinp2
         call ideerr
         jr c,ideinp2
-        call bnkmofx
+        call idehde
+	call bnkmofx
         call bnkdofx             ;allow irqs between sectors
         call ideshw
         ld a,c
@@ -216,19 +221,22 @@ ideact  push af
         ld (hl),a              ;mark LBA device
         pop hl
         pop af
-
-        call ideshw
-
-        ; Software reset
+	ld (ideactdev),a
+        
+	; Software reset
+	call ideshw
         ld a,#04
         ld (ideprtdig),a
+	nop
         xor a
         ld (ideprtdig),a
+	call idehde
 
         ; Wait for BSY=0 and DRDY=1
         ld hl,256*30
+	call ideshw
 ideact_wait:
-        ld a,(ideprtsta)
+	ld a,(ideprtsta)
         and #c0
         cp #40
         jr z,ideact_ready
@@ -236,19 +244,25 @@ ideact_wait:
         jr nz,ideact_wait
         dec h
         jr nz,ideact_wait
-        call bnkdofx           ;Release the ideshw mapping before bailing out
+        call idehde
+	call bnkdofx           ;Release the ideshw mapping before bailing out
         ld a,stoerrabo
         scf
         ret
 
 ideact_ready:
         ; Second software reset, as in the Nextor driver
-        ld a,#04
+        call ideshw
+	ld a,#04
         ld (ideprtdig),a
+	nop
         xor a
         ld (ideprtdig),a
+	nop
+	call idehde
 
         ; Read physical sector 0
+	ld a,(ideactdev)
         ld ix,0
         ld iy,0
         ld b,1
@@ -322,28 +336,54 @@ ideact5 ex de,hl
 ;### Destroyed  AF,BC,DE,HL
 idecop  call idedrq
         ret c
-        ld a,512/64
-idecop1 ldi:ldi:ldi:ldi:ldi:ldi:ldi:ldi:ldi:ldi:ldi:ldi:ldi:ldi:ldi:ldi
-        ldi:ldi:ldi:ldi:ldi:ldi:ldi:ldi:ldi:ldi:ldi:ldi:ldi:ldi:ldi:ldi
-        ldi:ldi:ldi:ldi:ldi:ldi:ldi:ldi:ldi:ldi:ldi:ldi:ldi:ldi:ldi:ldi
-        ldi:ldi:ldi:ldi:ldi:ldi:ldi:ldi:ldi:ldi:ldi:ldi:ldi:ldi:ldi:ldi
-        dec a
-        jp nz,idecop1
-idecop_wait:
-        ld hl,256*30            ;Bounded wait, same limit as IDEACT/IDERDY
-idecop_wait1:
-        ld a,(ideprtsta)
-        bit 7,a
-        jr z,idecop_wait_end
-        dec l
-        jr nz,idecop_wait1
-        dec h
-        jr nz,idecop_wait1
-        ld a,stoerrabo           ;Timeout report as an error
-        scf
-        ret
-idecop_wait_end:
-        ret
+	
+	push hl
+	ld hl,256*30
+idecop_bsy_pre1
+	ld a,(ideprtsta)
+	bit 7,a
+	jr z,idecop_bsy_pre_ok
+	dec l
+	jr nz,idecop_bsy_pre1
+	dec h
+	jr nz,idecop_bsy_pre1
+	pop hl
+	ld a,stoerrabo
+	scf
+	ret
+idecop_bsy_pre_ok
+	pop hl
+
+	ld BC, #2000        ; 32 iterations x 16 copies = 512 bytes (20h-->32d in B)
+idecop1
+	push bc
+	REPEAT 16           ; WinAPE native syntax for repeating blocks
+		ldi
+		push af	    ; Delay required for the MSX TurboR to be able to read at R800 speed.
+		pop af
+	REND                ; Mandatory closure of the repetition loop in WinAPE
+	pop bc
+	djnz idecop1
+
+idecop_wait
+	ld hl,256*30            ;Bounded wait, same limit as IDEACT/IDERDY
+idecop_wait1
+	nop
+	nop
+	ld a,(ideprtsta)
+	bit 3,a                 ;DRQ
+	jr nz,idecop_wait_end   ;If DRQ=1, we exit
+	bit 7,a                 ;BSY
+	jr z,idecop_wait_end    ;If BSY=0, we exit
+	dec l
+	jr nz,idecop_wait1
+	dec h
+	jr nz,idecop_wait1
+	ld a,stoerrabo
+	scf
+	ret
+idecop_wait_end
+	ret
 
 ;### IDEERR -> check error state
 ;### Output     CF=0 -> ok (A=0 everything ok, A=1 data had to be error corrected),
@@ -428,9 +468,6 @@ idesec2 ld bc,stodatsub
 ;###            CF=1 -> A=error code (...)
 ;### Destroyed  AF,BC
 ideadr  call ideshw
-        call iderdy
-        ret c
-
         ; FlashJacks Nextor pattern -
         ; HEAD/SDH first, then LBA low, mid, high, then sector count.
         ld a,d
@@ -443,18 +480,33 @@ ideadr  call ideshw
         ld (ideprttrk+1),a
         ld a,b
         ld (ideprtscn),a
+	
+	call iderdy
         ret
 
 ;### IDESHW -> maps IDE memory to #4000-#7FFF
 ;### Destroyed  A
-ideshw  ld a,(ideslt+0)
+ideshw	ld a,(ideslt+0)
         di
         out (#a8),a
-ideshw1 ld a,(ideslt+1)
+	ld a,(ideslt+1)
         ld (#ffff),a
         ld a,(ideslt+2)
         out (#a8),a
-        ld a,7*32+1
+        ld a,1
+        ld (#4104),a
+        ret
+
+;### IDEHDE -> Hide IDE memory to #4000-#7FFF
+;### Destroyed  A
+idehde	ld a,(ideslt+0)
+        di
+        out (#a8),a
+	ld a,(ideslt+1)
+        ld (#ffff),a
+        ld a,(ideslt+2)
+        out (#a8),a
+        ld a,0
         ld (#4104),a
         ret
 
@@ -476,11 +528,12 @@ iderdy1 ld a,(ideprtsta)
         dec b
         jr z,iderdy3           ;Retries exhausted give up with an error
         push bc                ;Preserve retry counter across the external calls
-        call bnkmofx
+        call idehde
+	call bnkmofx
         call bnkdofx
         rst #30
         call ideshw
-iderdy4 ld a,0
+iderdy4 ld a,(idefc)
         out (#fc),a
         pop bc
         jr iderdy0
@@ -495,9 +548,9 @@ iderdy2 pop bc
 ;### Destroyed  AF
 idedrq  push hl
         ld hl,256*30            ;Bounded wait, same limit as IDEACT/IDERDY
+idedrq1 nop
         nop
-        nop
-idedrq1 ld a,(ideprtsta)
+	ld a,(ideprtsta)
         bit 3,a
         jr nz,idedrq_end
         bit 7,a
